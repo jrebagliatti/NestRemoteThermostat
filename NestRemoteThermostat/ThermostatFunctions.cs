@@ -10,6 +10,7 @@ using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Extensions.Configuration;
+using Microsoft.WindowsAzure.Storage.Table;
 using NestRemoteThermostat.Model;
 using Newtonsoft.Json;
 
@@ -22,12 +23,21 @@ namespace NestRemoteThermostat
             [TimerTrigger("0 */5 * * * *")]TimerInfo myTimer, 
             [Blob("temp-monitor/nest-token", FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
             [Blob("temp-monitor/nest-token", FileAccess.Write, Connection = "StorageConnectionAppSetting")] Stream outputBlob,
-            TraceWriter log)
+            [Table("ThermostatData", Connection = "StorageConnectionAppSetting")] CloudTable outputTable,
+            TraceWriter log,
+            ExecutionContext context)
         {
             log.Info($"C# Timer trigger function executed at: {DateTime.Now}");
 
-            //await ResolveTokenAsync(inputBlob, outputBlob, log);
+            IConfigurationRoot configurationRoot = ReadConfiguration(context);
+            foreach (var device in configurationRoot["Nest.Devices"].Split(','))
+            {
+                var currentData = await GetThermostatData(inputBlob, outputBlob, device, log, configurationRoot);
+                currentData.RowKey = DateTime.UtcNow.ToString("yyyyMMddhhmmss");
+                currentData.PartitionKey = device;
 
+                await outputTable.ExecuteAsync(TableOperation.Insert(currentData));
+            }
         }
 
         [FunctionName("GetThermostatData")]
@@ -41,23 +51,30 @@ namespace NestRemoteThermostat
         {
             IConfigurationRoot configurationRoot = ReadConfiguration(context);
 
+            var result = await GetThermostatData(inputBlob, outputBlob, deviceId, log, configurationRoot);
+
+            return new JsonResult(result);
+        }
+
+        private static async Task<ThermostatData> GetThermostatData(Stream inputBlob, Stream outputBlob, string deviceId, TraceWriter log, IConfigurationRoot configurationRoot)
+        {
             var token = await ResolveTokenAsync(configurationRoot, inputBlob, outputBlob, log);
 
-            ThermostatData temperature;
+            ThermostatData result;
 
             try
             {
-                temperature = await GetThermostatDataAsync(deviceId, token.AccessToken);
+                result = await GetThermostatDataAsync(deviceId, token.AccessToken);
             }
-            catch(Exception e)
+            catch (Exception e)
             {
                 // Retry with a new token
                 token = await ResolveTokenAsync(configurationRoot, inputBlob, outputBlob, log, true);
 
-                temperature = await GetThermostatDataAsync(deviceId, token.AccessToken);
+                result = await GetThermostatDataAsync(deviceId, token.AccessToken);
             }
 
-            return new JsonResult(temperature);
+            return result;
         }
 
         private static void LoadStreamFromString(Stream stream, string s)

@@ -1,11 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text;
+using Microsoft.WindowsAzure.Storage.Table;
 using Newtonsoft.Json;
 
 namespace NestRemoteThermostat.Model
 {
-    public class ThermostatData
+    public class ThermostatData : TableEntity
     {
         [JsonProperty("humidity")]
         public int Humidity { get; set; }
