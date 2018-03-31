@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using Newtonsoft.Json;
 
-namespace NestRemoteThermometer.Model
+namespace NestRemoteThermostat.Model
 {
     public class ThermostatData
     {

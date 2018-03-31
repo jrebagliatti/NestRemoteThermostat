@@ -10,12 +10,12 @@ using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Extensions.Configuration;
-using NestRemoteThermometer.Model;
+using NestRemoteThermostat.Model;
 using Newtonsoft.Json;
 
-namespace NestRemoteThermometer
+namespace NestRemoteThermostat
 {
-    public static class Function1
+    public static class ThermostatFunctions
     {
         [FunctionName("TemperaturePolling")]
         public static async Task Run(

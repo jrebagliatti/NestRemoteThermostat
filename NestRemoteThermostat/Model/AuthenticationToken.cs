@@ -3,7 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
-namespace NestRemoteThermometer.Model
+namespace NestRemoteThermostat.Model
 {
     public class AuthenticationToken
     {
