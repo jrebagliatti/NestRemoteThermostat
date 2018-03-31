@@ -30,9 +30,9 @@ namespace NestRemoteThermostat
 
         }
 
-        [FunctionName("GetTemperature")]
+        [FunctionName("GetThermostatData")]
         public static async Task<IActionResult> GetTemperature(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "{deviceId}/GetTemperature")]HttpRequest req,
+            [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "thermostats/{deviceId}")]HttpRequest req,
             [Blob("temp-monitor/nest-token", FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
             [Blob("temp-monitor/nest-token", FileAccess.Write, Connection = "StorageConnectionAppSetting")] Stream outputBlob,
             string deviceId,
@@ -43,18 +43,18 @@ namespace NestRemoteThermostat
 
             var token = await ResolveTokenAsync(configurationRoot, inputBlob, outputBlob, log);
 
-            double temperature;
+            ThermostatData temperature;
 
             try
             {
-                temperature = await GetTempAsync(deviceId, token.AccessToken);
+                temperature = await GetThermostatDataAsync(deviceId, token.AccessToken);
             }
             catch(Exception e)
             {
                 // Retry with a new token
                 token = await ResolveTokenAsync(configurationRoot, inputBlob, outputBlob, log, true);
 
-                temperature = await GetTempAsync(deviceId, token.AccessToken);
+                temperature = await GetThermostatDataAsync(deviceId, token.AccessToken);
             }
 
             return new JsonResult(temperature);
@@ -75,7 +75,7 @@ namespace NestRemoteThermostat
             }
         }
 
-        private static async Task<double> GetTempAsync(string deviceId, string token)
+        private static async Task<ThermostatData> GetThermostatDataAsync(string deviceId, string token)
         {
             var client = new HttpClient();
             client.DefaultRequestHeaders.TryAddWithoutValidation("Content-Type", "application/json; charset=utf-8");
@@ -93,11 +93,11 @@ namespace NestRemoteThermostat
 
                 var data = JsonConvert.DeserializeObject<ThermostatData>(responseContent);
 
-                return data.AmbientTemperatureC;
+                return data;
             }
             else
             {
-                return 0;
+                return null;
             }
         }
 
