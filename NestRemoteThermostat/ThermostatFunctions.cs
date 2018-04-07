@@ -56,6 +56,43 @@ namespace NestRemoteThermostat
             return new JsonResult(result);
         }
 
+
+        [FunctionName("GetThermostats")]
+        public static async Task<IActionResult> GetThermostats(
+            [HttpTrigger(Route = "thermostats")]HttpRequest req,
+            [Blob("temp-monitor/nest-token", FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
+            [Blob("temp-monitor/nest-token", FileAccess.Write, Connection = "StorageConnectionAppSetting")] Stream outputBlob,
+            TraceWriter log,
+            ExecutionContext context)
+        {
+            IConfigurationRoot configurationRoot = ReadConfiguration(context);
+
+            var token = await ResolveTokenAsync(configurationRoot, inputBlob, outputBlob, log);
+
+            var client = new HttpClient();
+            client.DefaultRequestHeaders.TryAddWithoutValidation("Content-Type", "application/json; charset=utf-8");
+
+            var request = new HttpRequestMessage(HttpMethod.Get, "https://developer-api.nest.com/devices/thermostats/");
+
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.AccessToken);
+
+            var response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+
+            if (response.Content != null)
+            {
+                var responseContent = await response.Content.ReadAsStringAsync();
+
+                var data = JsonConvert.DeserializeObject(responseContent);
+
+                return new JsonResult(data);
+            }
+            else
+            {
+                return null;
+            }
+        }
+
         private static async Task<ThermostatData> GetThermostatData(Stream inputBlob, Stream outputBlob, string deviceId, TraceWriter log, IConfigurationRoot configurationRoot)
         {
             var token = await ResolveTokenAsync(configurationRoot, inputBlob, outputBlob, log);
