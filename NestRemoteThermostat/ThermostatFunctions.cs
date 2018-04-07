@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
@@ -10,6 +11,8 @@ using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Extensions.Configuration;
+using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure.Storage.Blob;
 using Microsoft.WindowsAzure.Storage.Table;
 using NestRemoteThermostat.Model;
 using Newtonsoft.Json;
@@ -18,22 +21,24 @@ namespace NestRemoteThermostat
 {
     public static class ThermostatFunctions
     {
+        private const string DateTimeFormat = "yyyyMMddhhmmss";
+        private const string ContainerName = "temp-monitor";
+        private const string TokenFileName = "nest-token";
         [FunctionName("TemperaturePolling")]
-        public static async Task Run(
-            [TimerTrigger("0 */5 * * * *")]TimerInfo myTimer, 
+        public static async Task TemperaturePollingAsync(
+            [TimerTrigger("0 */5 * * * *")]TimerInfo myTimer,
             [Blob("temp-monitor/nest-token", FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
-            [Blob("temp-monitor/nest-token", FileAccess.Write, Connection = "StorageConnectionAppSetting")] Stream outputBlob,
             [Table("ThermostatData", Connection = "StorageConnectionAppSetting")] CloudTable outputTable,
             TraceWriter log,
             ExecutionContext context)
         {
-            log.Info($"C# Timer trigger function executed at: {DateTime.Now}");
+            log.Info($"Temperature Polling Timer trigger function executed at: {DateTime.Now}");
 
             IConfigurationRoot configurationRoot = ReadConfiguration(context);
             foreach (var device in configurationRoot["Nest.Devices"].Split(','))
             {
-                var currentData = await GetThermostatData(inputBlob, outputBlob, device, log, configurationRoot);
-                currentData.RowKey = DateTime.UtcNow.ToString("yyyyMMddhhmmss");
+                var currentData = await GetThermostatData(inputBlob, device, log, configurationRoot);
+                currentData.RowKey = DateTime.UtcNow.ToString(DateTimeFormat);
                 currentData.PartitionKey = device;
 
                 await outputTable.ExecuteAsync(TableOperation.Insert(currentData));
@@ -42,16 +47,16 @@ namespace NestRemoteThermostat
 
         [FunctionName("GetThermostatData")]
         public static async Task<IActionResult> GetTemperature(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "thermostats/{deviceId}")]HttpRequest req,
-            [Blob("temp-monitor/nest-token", FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
-            [Blob("temp-monitor/nest-token", FileAccess.Write, Connection = "StorageConnectionAppSetting")] Stream outputBlob,
+            [HttpTrigger(AuthorizationLevel.Function, "get", Route = "thermostats/{deviceId}")] HttpRequest req,
+            [Blob(ContainerName + "/" + TokenFileName, FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
             string deviceId,
             TraceWriter log,
             ExecutionContext context)
         {
             IConfigurationRoot configurationRoot = ReadConfiguration(context);
 
-            var result = await GetThermostatData(inputBlob, outputBlob, deviceId, log, configurationRoot);
+            //// TODO: Implement an In-Memory cache to avoid throttling the API
+                var result = await GetThermostatData(inputBlob, deviceId, log, configurationRoot);
 
             return new JsonResult(result);
         }
@@ -59,15 +64,14 @@ namespace NestRemoteThermostat
 
         [FunctionName("GetThermostats")]
         public static async Task<IActionResult> GetThermostats(
-            [HttpTrigger(Route = "thermostats")]HttpRequest req,
-            [Blob("temp-monitor/nest-token", FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
-            [Blob("temp-monitor/nest-token", FileAccess.Write, Connection = "StorageConnectionAppSetting")] Stream outputBlob,
+            [HttpTrigger(AuthorizationLevel.Function, "get", Route = "thermostats")] HttpRequest req,
+            [Blob(ContainerName + "/" + TokenFileName, FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
             TraceWriter log,
             ExecutionContext context)
         {
             IConfigurationRoot configurationRoot = ReadConfiguration(context);
 
-            var token = await ResolveTokenAsync(configurationRoot, inputBlob, outputBlob, log);
+            var token = await ResolveTokenAsync(configurationRoot, inputBlob, log);
 
             var client = new HttpClient();
             client.DefaultRequestHeaders.TryAddWithoutValidation("Content-Type", "application/json; charset=utf-8");
@@ -93,9 +97,9 @@ namespace NestRemoteThermostat
             }
         }
 
-        private static async Task<ThermostatData> GetThermostatData(Stream inputBlob, Stream outputBlob, string deviceId, TraceWriter log, IConfigurationRoot configurationRoot)
+        private static async Task<ThermostatData> GetThermostatData(Stream inputBlob, string deviceId, TraceWriter log, IConfigurationRoot configurationRoot)
         {
-            var token = await ResolveTokenAsync(configurationRoot, inputBlob, outputBlob, log);
+            var token = await ResolveTokenAsync(configurationRoot, inputBlob, log);
 
             ThermostatData result;
 
@@ -106,7 +110,7 @@ namespace NestRemoteThermostat
             catch (Exception e)
             {
                 // Retry with a new token
-                token = await ResolveTokenAsync(configurationRoot, inputBlob, outputBlob, log, true);
+                token = await ResolveTokenAsync(configurationRoot, inputBlob, log, true);
 
                 result = await GetThermostatDataAsync(deviceId, token.AccessToken);
             }
@@ -116,9 +120,11 @@ namespace NestRemoteThermostat
 
         private static void LoadStreamFromString(Stream stream, string s)
         {
-            var writer = new StreamWriter(stream);
-            writer.Write(s);
-            writer.Flush();
+            using (var writer = new StreamWriter(stream))
+            {
+                writer.Write(s);
+                writer.Flush();
+            }
         }
 
         private static string GenerateStringFromStream(Stream s)
@@ -155,7 +161,7 @@ namespace NestRemoteThermostat
             }
         }
 
-        private static async Task<AuthenticationToken> ResolveTokenAsync(IConfigurationRoot configuration, Stream inputBlob, Stream outputBlob, TraceWriter log, bool forceTokenRenewal = false)
+        private static async Task<AuthenticationToken> ResolveTokenAsync(IConfigurationRoot configuration, Stream inputBlob, TraceWriter log, bool forceTokenRenewal = false)
         {
             AuthenticationToken token;
             if (inputBlob == null || forceTokenRenewal)
@@ -163,12 +169,13 @@ namespace NestRemoteThermostat
                 log.Info("Obtaining Authentication Token");
                 token = await GetTokenAsync(configuration);
                 var serializedToken = JsonConvert.SerializeObject(token);
-                LoadStreamFromString(outputBlob, serializedToken);
+                await UpdateBlobAsybc(configuration["StorageConnectionAppSetting"], ContainerName, TokenFileName, serializedToken);
             }
             else
             {
                 log.Info("Using existing Authentication token");
-                token = JsonConvert.DeserializeObject<AuthenticationToken>(GenerateStringFromStream(inputBlob));
+                var tokenString = GenerateStringFromStream(inputBlob);
+                token = JsonConvert.DeserializeObject<AuthenticationToken>(tokenString);
             }
 
             return token;
@@ -211,6 +218,18 @@ namespace NestRemoteThermostat
                 .AddJsonFile("local.settings.json", optional: true, reloadOnChange: true)
                 .AddEnvironmentVariables()
                 .Build();
+        }
+
+        private static async Task UpdateBlobAsybc(string connectionString, string containerName, string fileName, string content)
+        {
+            if (CloudStorageAccount.TryParse(connectionString, out CloudStorageAccount storageAccount))
+            {
+                var cloudClient = storageAccount.CreateCloudBlobClient();
+                var container = cloudClient.GetContainerReference(ContainerName);
+
+                var fileReference = container.GetBlockBlobReference(fileName);
+                await fileReference.UploadTextAsync(content);
+            }
         }
     }
 }
