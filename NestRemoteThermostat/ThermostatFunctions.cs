@@ -24,6 +24,11 @@ namespace NestRemoteThermostat
         private const string DateTimeFormat = "yyyyMMddhhmmss";
         private const string ContainerName = "temp-monitor";
         private const string TokenFileName = "nest-token";
+        private const int DefaultCacheTimeout = 60000;
+
+        private static DateTime latestReadingTimestamp;
+        private static ThermostatData latestReading;
+
         [FunctionName("TemperaturePolling")]
         public static async Task TemperaturePollingAsync(
             [TimerTrigger("0 */5 * * * *")]TimerInfo myTimer,
@@ -53,12 +58,37 @@ namespace NestRemoteThermostat
             TraceWriter log,
             ExecutionContext context)
         {
+            var requireNewReading = true;
+
             IConfigurationRoot configurationRoot = ReadConfiguration(context);
 
-            //// TODO: Implement an In-Memory cache to avoid throttling the API
-                var result = await GetThermostatData(inputBlob, deviceId, log, configurationRoot);
+            // Using an In-Memory cache to avoid throttling the API
+            //// TODO: Resolve possible racing conditions
+            if (latestReading != null && latestReadingTimestamp != null)
+            {
+                var cacheTimeout = DefaultCacheTimeout;
 
-            return new JsonResult(result);
+                if(int.TryParse(configurationRoot["ThermostatDataCacheTimeoutMs"], out int cacheTimeoutOverride))
+                {
+                    cacheTimeout = cacheTimeoutOverride;
+                }
+
+                var newTimestamp = DateTime.UtcNow.AddMilliseconds(-cacheTimeout);
+                if (newTimestamp < latestReadingTimestamp)
+                {
+                    requireNewReading = false;
+                }
+            }
+
+            if (requireNewReading)
+            {
+                log.Info("Obtaining a new Reading from Nest");
+                var result = await GetThermostatData(inputBlob, deviceId, log, configurationRoot);
+                latestReadingTimestamp = DateTime.UtcNow;
+                latestReading = result;
+            }
+
+            return new JsonResult(latestReading);
         }
 
 
