@@ -51,44 +51,29 @@ namespace NestRemoteThermostat
         }
 
         [FunctionName("GetThermostatData")]
-        public static async Task<IActionResult> GetTemperature(
+        public static async Task<IActionResult> GetThermostatDataAsync(
             [HttpTrigger(AuthorizationLevel.Function, "get", Route = "thermostats/{deviceId}")] HttpRequest req,
             [Blob(ContainerName + "/" + TokenFileName, FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
             string deviceId,
             TraceWriter log,
             ExecutionContext context)
         {
-            var requireNewReading = true;
+            var result = await ExecuteGetThermostatDataAsync(inputBlob, deviceId, log, context);
 
-            IConfigurationRoot configurationRoot = ReadConfiguration(context);
+            return new JsonResult(result);
+        }
 
-            // Using an In-Memory cache to avoid throttling the API
-            //// TODO: Resolve possible racing conditions
-            if (latestReading != null && latestReadingTimestamp != null)
-            {
-                var cacheTimeout = DefaultCacheTimeout;
+        [FunctionName("GetThermostatDataSlack")]
+        public static async Task<IActionResult> GetThermostatDataSlackAsync(
+            [HttpTrigger(Route = "thermostats/{deviceId}/slack", WebHookType = "slack")] HttpRequest req,
+            [Blob(ContainerName + "/" + TokenFileName, FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
+            string deviceId,
+            TraceWriter log,
+            ExecutionContext context)
+        {
+            var result = await ExecuteGetThermostatDataAsync(inputBlob, deviceId, log, context);
 
-                if(int.TryParse(configurationRoot["ThermostatDataCacheTimeoutMs"], out int cacheTimeoutOverride))
-                {
-                    cacheTimeout = cacheTimeoutOverride;
-                }
-
-                var newTimestamp = DateTime.UtcNow.AddMilliseconds(-cacheTimeout);
-                if (newTimestamp < latestReadingTimestamp)
-                {
-                    requireNewReading = false;
-                }
-            }
-
-            if (requireNewReading)
-            {
-                log.Info("Obtaining a new Reading from Nest");
-                var result = await GetThermostatData(inputBlob, deviceId, log, configurationRoot);
-                latestReadingTimestamp = DateTime.UtcNow;
-                latestReading = result;
-            }
-
-            return new JsonResult(latestReading);
+            return new JsonResult(new { Text = $"Current Temperature is {result.AmbientTemperatureC}�C. Humidity {result.Humidity}%. Target Temperature ${result.TargetTemperatureC}�C." });
         }
 
 
@@ -125,6 +110,41 @@ namespace NestRemoteThermostat
             {
                 return null;
             }
+        }
+
+        private static async Task<ThermostatData> ExecuteGetThermostatDataAsync(Stream inputBlob, string deviceId, TraceWriter log, ExecutionContext context)
+        {
+            var requireNewReading = true;
+
+            IConfigurationRoot configurationRoot = ReadConfiguration(context);
+
+            // Using an In-Memory cache to avoid throttling the API
+            //// TODO: Resolve possible racing conditions
+            if (latestReading != null && latestReadingTimestamp != null)
+            {
+                var cacheTimeout = DefaultCacheTimeout;
+
+                if (int.TryParse(configurationRoot["ThermostatDataCacheTimeoutMs"], out int cacheTimeoutOverride))
+                {
+                    cacheTimeout = cacheTimeoutOverride;
+                }
+
+                var newTimestamp = DateTime.UtcNow.AddMilliseconds(-cacheTimeout);
+                if (newTimestamp < latestReadingTimestamp)
+                {
+                    requireNewReading = false;
+                }
+            }
+
+            if (requireNewReading)
+            {
+                log.Info("Obtaining a new Reading from Nest");
+                var result = await GetThermostatData(inputBlob, deviceId, log, configurationRoot);
+                latestReadingTimestamp = DateTime.UtcNow;
+                latestReading = result;
+            }
+
+            return latestReading;
         }
 
         private static async Task<ThermostatData> GetThermostatData(Stream inputBlob, string deviceId, TraceWriter log, IConfigurationRoot configurationRoot)
