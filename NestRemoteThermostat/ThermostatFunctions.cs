@@ -73,7 +73,7 @@ namespace NestRemoteThermostat
         {
             var result = await ExecuteGetThermostatDataAsync(inputBlob, deviceId, log, context);
 
-            return new JsonResult(new { Text = $"Current Temperature is {result.AmbientTemperatureC}�C. Humidity {result.Humidity}%. Target Temperature ${result.TargetTemperatureC}�C." });
+            return new JsonResult(new { Text = $"Current Temperature is {result.AmbientTemperatureC}�C. Humidity {result.Humidity}%. Target Temperature {result.TargetTemperatureC}�C." });
         }
 
 
