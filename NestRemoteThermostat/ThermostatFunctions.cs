@@ -52,7 +52,7 @@ namespace NestRemoteThermostat
 
         [FunctionName("TemperatureCop")]
         public static async Task TemperatureCopAsync(
-            [TimerTrigger("0 */1 * * * *")]TimerInfo myTimer,
+            [TimerTrigger("0 */10 * * * 1-5")]TimerInfo myTimer,
             [Table("ThermostatData", Connection = "StorageConnectionAppSetting")] CloudTable temperatureTable,
             [Table("ReportsTable", Connection = "StorageConnectionAppSetting")] CloudTable reportsTable,
             [Blob(ContainerName + "/" + TokenFileName, FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
