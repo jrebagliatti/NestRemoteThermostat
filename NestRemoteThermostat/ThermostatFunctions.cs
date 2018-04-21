@@ -50,6 +50,90 @@ namespace NestRemoteThermostat
             }
         }
 
+        [FunctionName("TemperatureCop")]
+        public static async Task TemperatureCopAsync(
+            [TimerTrigger("0 */1 * * * *")]TimerInfo myTimer,
+            [Table("ThermostatData", Connection = "StorageConnectionAppSetting")] CloudTable temperatureTable,
+            [Table("ReportsTable", Connection = "StorageConnectionAppSetting")] CloudTable reportsTable,
+            [Blob(ContainerName + "/" + TokenFileName, FileAccess.Read, Connection = "StorageConnectionAppSetting")] Stream inputBlob,
+            TraceWriter log,
+            ExecutionContext context)
+        {
+            log.Info($"Temperature Cop Timer trigger function executed at: {DateTime.Now}");
+
+            IConfigurationRoot configurationRoot = ReadConfiguration(context);
+
+            int temperatureCheckRangeMinutes = int.Parse(configurationRoot["TemperatureCheckRangeMinutes"]);
+            int temperatureReportingRangeMinutes = int.Parse(configurationRoot["TemperatureReportingRangeMinutes"]);
+            double targetTemp = double.Parse(configurationRoot["TargetTemperature"]);
+            double comfortRange = double.Parse(configurationRoot["ComfortTemperatureRange"]);
+
+            double comfortMaxTemp = targetTemp + comfortRange;
+            double comfortMinTemp = targetTemp - comfortRange;
+
+            var dateFrom = DateTime.UtcNow.AddMinutes(-temperatureCheckRangeMinutes).ToString(DateTimeFormat);
+
+            foreach (var device in configurationRoot["Nest.Devices"].Split(','))
+            {
+                // Get the latests lectures
+                var query = new TableQuery<ThermostatData>()
+                    .Where(
+                        TableQuery.CombineFilters(
+                            TableQuery.GenerateFilterCondition("PartitionKey", QueryComparisons.Equal, device),
+                            TableOperators.And,
+                            TableQuery.GenerateFilterCondition("RowKey", QueryComparisons.GreaterThan, dateFrom)));
+
+                var result = await temperatureTable.ExecuteQueryAsync<ThermostatData>(query);
+
+                if (result != null && result.Any())
+                {
+                    // If all readings are below/above comfort temperature
+                    var tooHot = result.All(x => x.AmbientTemperatureC > comfortMaxTemp);
+                    var tooCold = result.All(x => x.AmbientTemperatureC < comfortMinTemp);
+
+                    if (tooHot || tooCold)
+                    {
+                        var currentTemp = result.OrderBy(x => x.RowKey).Last().AmbientTemperatureC;
+                        var message = new TemperatureNotification()
+                        {
+                            DeviceId = device,
+                            NotificationType = tooHot ? TemperatureNotificationType.Hot : TemperatureNotificationType.Cold,
+                            ComfortTemperatureMax = comfortMaxTemp,
+                            ComfortTemperatureMin = comfortMinTemp,
+                            CurrentTemperature = currentTemp,
+                            EvaluationPeriodMinutes = temperatureReportingRangeMinutes,
+                            RowKey = DateTime.UtcNow.ToString(DateTimeFormat),
+                            PartitionKey = device
+                        };
+
+                        // Check if a report has recently sent in the last minutes
+                        var notificationType = Enum.GetName(typeof(TemperatureNotificationType), message.NotificationType);
+
+                        log.Info($"Temperature out of range detected for device {message.DeviceId}, Notification Type {notificationType}.");
+
+                        var reportDateFrom = DateTime.UtcNow.AddMinutes(-temperatureReportingRangeMinutes).ToString(DateTimeFormat);
+                        var latestReportsQuery = new TableQuery<TemperatureNotification>()
+                            .Where(
+                                TableQuery.CombineFilters(
+                                    TableQuery.GenerateFilterCondition("PartitionKey", QueryComparisons.Equal, device),
+                                    TableOperators.And,
+                                    TableQuery.GenerateFilterCondition("RowKey", QueryComparisons.GreaterThan, dateFrom)));
+
+                        var latestReports = await reportsTable.ExecuteQueryAsync<TemperatureNotification>(latestReportsQuery);
+                        if (!latestReports.Any(x => x.NotificationType == message.NotificationType))
+                        {
+                            await ReportTemperatureIssue(configurationRoot, message, log);
+                            await reportsTable.ExecuteAsync(TableOperation.Insert(message));
+                        }
+                        else
+                        {
+                            log.Info($"Temperature {notificationType} has been already reported in the last {temperatureReportingRangeMinutes} minutes.");
+                        }
+                    }
+                }
+            }
+        }
+
         [FunctionName("GetThermostatData")]
         public static async Task<IActionResult> GetThermostatDataAsync(
             [HttpTrigger(AuthorizationLevel.Function, "get", Route = "thermostats/{deviceId}")] HttpRequest req,
@@ -73,7 +157,7 @@ namespace NestRemoteThermostat
         {
             var result = await ExecuteGetThermostatDataAsync(inputBlob, deviceId, log, context);
 
-            return new JsonResult(new { Text = $"Current Temperature is {result.AmbientTemperatureC}ï¿½C. Humidity {result.Humidity}%. Target Temperature ${result.TargetTemperatureC}ï¿½C." });
+            return new JsonResult(new { Text = $"Current Temperature is *{result.AmbientTemperatureC}°C*. Humidity {result.Humidity}%." });
         }
 
 
@@ -110,6 +194,26 @@ namespace NestRemoteThermostat
             {
                 return null;
             }
+        }
+
+        private static async Task ReportTemperatureIssue(IConfigurationRoot configurationRoot, TemperatureNotification notification, TraceWriter log)
+        {
+            var notificationType = Enum.GetName(typeof(TemperatureNotificationType), notification.NotificationType);
+
+            log.Info($"Generating Temperature Notification for device {notification.DeviceId}, Notification Type {notificationType}.");
+
+            var messageTemplate = configurationRoot[$"ReportTemperatureMessage.{notificationType}"];
+            var message = string.Format(messageTemplate, notification.DeviceId, notification.CurrentTemperature, notification.EvaluationPeriodMinutes, notification.ComfortTemperatureMin, notification.ComfortTemperatureMax);
+            var notificationUrl = configurationRoot["SlackNotificationUrl"];
+
+            var client = new HttpClient();
+            var request = new HttpRequestMessage(HttpMethod.Post, notificationUrl);
+            request.Content = new StringContent(JsonConvert.SerializeObject(new
+            {
+                text = message
+            }));
+
+            await client.SendAsync(request);
         }
 
         private static async Task<ThermostatData> ExecuteGetThermostatDataAsync(Stream inputBlob, string deviceId, TraceWriter log, ExecutionContext context)
