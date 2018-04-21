@@ -63,10 +63,10 @@ namespace NestRemoteThermostat
 
             IConfigurationRoot configurationRoot = ReadConfiguration(context);
 
-            int temperatureCheckRangeMinutes = int.Parse(configurationRoot["TemperatureCheckRangeMinutes"]);
-            int temperatureReportingRangeMinutes = int.Parse(configurationRoot["TemperatureReportingRangeMinutes"]);
-            double targetTemp = double.Parse(configurationRoot["TargetTemperature"]);
-            double comfortRange = double.Parse(configurationRoot["ComfortTemperatureRange"]);
+            int temperatureCheckRangeMinutes = int.Parse(configurationRoot["RunCheckRangeMinutes"]);
+            int temperatureReportingRangeMinutes = int.Parse(configurationRoot["RunReportingRangeMinutes"]);
+            double targetTemp = double.Parse(configurationRoot["TargetValue"]);
+            double comfortRange = double.Parse(configurationRoot["ComfortRange"]);
 
             double comfortMaxTemp = targetTemp + comfortRange;
             double comfortMinTemp = targetTemp - comfortRange;
